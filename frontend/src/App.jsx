@@ -40,14 +40,7 @@ function AuctionApp() {
     const loadData = async () => {
         try {
             const res = await axios.get('/api/auctions');
-            const data = Array.isArray(res.data) ? res.data : [];
-            if (data.length === 0) {
-                await axios.post('/api/seed');
-                const seeded = await axios.get('/api/auctions');
-                setAuctions(Array.isArray(seeded.data) ? seeded.data : []);
-            } else {
-                setAuctions(data);
-            }
+            setAuctions(Array.isArray(res.data) ? res.data : []);
         } catch (e) { 
             console.error(e);
             setAuctions([]);
@@ -78,7 +71,13 @@ function AuctionApp() {
 
             // Licitație nouă creată
             socket.on('auction_created', (auction) => {
-                setAuctions(prev => [auction, ...prev]);
+                setAuctions(prev => {
+                    // Verifică dacă licitația există deja (evită duplicate)
+                    if (prev.some(a => a._id === auction._id)) {
+                        return prev;
+                    }
+                    return [auction, ...prev];
+                });
                 setNotification({ 
                     open: true, 
                     message: `Licitație nouă: ${auction.title}!`, 
@@ -136,7 +135,7 @@ function AuctionApp() {
             });
             setOpenAddModal(false);
             setNewItem({ title: '', startPrice: '', durationHours: '24' });
-            loadData();
+            // Nu apelăm loadData() - Socket.io va actualiza lista automat
             setNotification({ open: true, message: "Licitație creată!", severity: 'success' });
         } catch (err) {
             setNotification({ open: true, message: err.response?.data?.error || "Eroare la creare", severity: 'error' });
