@@ -5,7 +5,7 @@ import {
     AppBar, Toolbar, Typography, Container, Grid, Card, CardContent, 
     Button, TextField, Chip, Snackbar, Alert, Box, IconButton,
     Dialog, DialogTitle, DialogContent, DialogActions, Avatar, Menu, MenuItem,
-    Divider, LinearProgress, Tooltip
+    Divider, LinearProgress, Tooltip, Tabs, Tab, Badge
 } from '@mui/material';
 import GavelIcon from '@mui/icons-material/Gavel';
 import AddIcon from '@mui/icons-material/Add';
@@ -14,6 +14,8 @@ import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import PersonIcon from '@mui/icons-material/Person';
 import LogoutIcon from '@mui/icons-material/Logout';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
+import LocalOfferIcon from '@mui/icons-material/LocalOffer';
+import AllInboxIcon from '@mui/icons-material/AllInbox';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
 
@@ -25,6 +27,7 @@ function AuctionApp() {
     const [bidAmounts, setBidAmounts] = useState({});
     const [notification, setNotification] = useState({ open: false, message: '', severity: 'success' });
     const [loading, setLoading] = useState(true);
+    const [activeTab, setActiveTab] = useState(0); // 0 = toate, 1 = licitațiile mele
     
     // State pentru modal adăugare
     const [openAddModal, setOpenAddModal] = useState(false);
@@ -52,10 +55,14 @@ function AuctionApp() {
         setLoading(false);
     };
 
+    // Licitațiile la care am aplicat
+    const myBids = auctions.filter(auc => auc.highestBidder === user?.username);
+
     useEffect(() => {
         if (user) {
             loadData();
             
+            // Actualizare preț
             socket.on('price_update', (data) => {
                 setAuctions(prev => prev.map(auc => 
                     auc._id === data.auctionId 
@@ -69,7 +76,31 @@ function AuctionApp() {
                 });
             });
 
-            return () => socket.off('price_update');
+            // Licitație nouă creată
+            socket.on('auction_created', (auction) => {
+                setAuctions(prev => [auction, ...prev]);
+                setNotification({ 
+                    open: true, 
+                    message: `Licitație nouă: ${auction.title}!`, 
+                    severity: 'success' 
+                });
+            });
+
+            // Licitație ștearsă
+            socket.on('auction_deleted', (auctionId) => {
+                setAuctions(prev => prev.filter(auc => auc._id !== auctionId));
+                setNotification({ 
+                    open: true, 
+                    message: 'O licitație a fost ștearsă', 
+                    severity: 'warning' 
+                });
+            });
+
+            return () => {
+                socket.off('price_update');
+                socket.off('auction_created');
+                socket.off('auction_deleted');
+            };
         }
     }, [user]);
 
@@ -200,17 +231,37 @@ function AuctionApp() {
             </AppBar>
 
             <Container sx={{ mt: 4, pb: 4 }}>
+                {/* Tabs pentru navigare */}
+                <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+                    <Tabs value={activeTab} onChange={(e, v) => setActiveTab(v)}>
+                        <Tab 
+                            icon={<AllInboxIcon />} 
+                            iconPosition="start" 
+                            label="Toate Licitațiile" 
+                        />
+                        <Tab 
+                            icon={
+                                <Badge badgeContent={myBids.length} color="primary">
+                                    <LocalOfferIcon />
+                                </Badge>
+                            } 
+                            iconPosition="start" 
+                            label="Licitațiile Mele" 
+                        />
+                    </Tabs>
+                </Box>
+
                 {loading ? (
                     <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
                         <LinearProgress sx={{ width: 200 }} />
                     </Box>
-                ) : auctions.length === 0 ? (
+                ) : (activeTab === 0 ? auctions : myBids).length === 0 ? (
                     <Box sx={{ textAlign: 'center', py: 8 }}>
                         <GavelIcon sx={{ fontSize: 60, color: 'text.secondary', mb: 2 }} />
                         <Typography variant="h5" color="text.secondary">
-                            Nu există licitații active
+                            {activeTab === 0 ? 'Nu există licitații active' : 'Nu ai licitat încă la nicio licitație'}
                         </Typography>
-                        {isAdmin && (
+                        {isAdmin && activeTab === 0 && (
                             <Button 
                                 variant="contained" 
                                 startIcon={<AddIcon />}
@@ -220,10 +271,19 @@ function AuctionApp() {
                                 Creează prima licitație
                             </Button>
                         )}
+                        {activeTab === 1 && (
+                            <Button 
+                                variant="outlined" 
+                                onClick={() => setActiveTab(0)}
+                                sx={{ mt: 2 }}
+                            >
+                                Vezi toate licitațiile
+                            </Button>
+                        )}
                     </Box>
                 ) : (
                     <Grid container spacing={3}>
-                        {auctions.map((auc) => (
+                        {(activeTab === 0 ? auctions : myBids).map((auc) => (
                             <Grid item xs={12} sm={6} md={4} key={auc._id}>
                                 <Card 
                                     elevation={3} 
@@ -232,7 +292,8 @@ function AuctionApp() {
                                         display: 'flex',
                                         flexDirection: 'column',
                                         transition: 'transform 0.2s',
-                                        '&:hover': { transform: 'translateY(-4px)' }
+                                        '&:hover': { transform: 'translateY(-4px)' },
+                                        border: auc.highestBidder === user?.username ? '2px solid #4caf50' : 'none'
                                     }}
                                 >
                                     <CardContent sx={{ flexGrow: 1 }}>

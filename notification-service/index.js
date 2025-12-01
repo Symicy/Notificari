@@ -28,9 +28,20 @@ Promise.all([pubClient.connect(), subClient.connect()]).then(() => {
             const data = JSON.parse(message);
             console.log("Mesaj primit din Redis:", data);
             
-            // Trimitem către toți clienții conectați la acest pod
-            // Sau către o cameră specifică: io.to(data.auctionId).emit(...)
-            io.emit('price_update', data); 
+            // Emite evenimente diferite în funcție de tip
+            switch(data.type) {
+                case 'BID_UPDATE':
+                    io.emit('price_update', data);
+                    break;
+                case 'AUCTION_CREATED':
+                    io.emit('auction_created', data.auction);
+                    break;
+                case 'AUCTION_DELETED':
+                    io.emit('auction_deleted', data.auctionId);
+                    break;
+                default:
+                    io.emit('price_update', data);
+            }
         });
     });
 });

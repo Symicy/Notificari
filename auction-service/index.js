@@ -131,6 +131,13 @@ app.post('/api/auctions', authenticateToken, requireAdmin, async (req, res) => {
             createdBy: req.user.id
         });
         await auction.save();
+        
+        // Publică eveniment pentru actualizare automată
+        await redisPublisher.publish('auction-updates', JSON.stringify({
+            type: 'AUCTION_CREATED',
+            auction: auction
+        }));
+        
         res.json(auction);
     } catch (err) {
         res.status(500).json({ error: 'Eroare la creare licitație' });
@@ -141,6 +148,13 @@ app.post('/api/auctions', authenticateToken, requireAdmin, async (req, res) => {
 app.delete('/api/auctions/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
         await Auction.findByIdAndDelete(req.params.id);
+        
+        // Publică eveniment pentru actualizare automată
+        await redisPublisher.publish('auction-updates', JSON.stringify({
+            type: 'AUCTION_DELETED',
+            auctionId: req.params.id
+        }));
+        
         res.json({ message: 'Licitație ștearsă' });
     } catch (err) {
         res.status(500).json({ error: 'Eroare la ștergere' });
