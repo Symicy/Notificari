@@ -92,10 +92,13 @@ app.post('/api/auctions/:id/bid', authenticateToken, async (req, res) => {
     const { amount } = req.body;
     const bidder = req.user.username;
 
-    // 1. Update Atomic în baza de date
+    // 1. Update Atomic în baza de date + adaugă bidder în lista de participanți
     const updatedAuction = await Auction.findOneAndUpdate(
         { _id: id, currentPrice: { $lt: amount }, isActive: true },
-        { $set: { currentPrice: amount, highestBidder: bidder } },
+        { 
+            $set: { currentPrice: amount, highestBidder: bidder },
+            $addToSet: { bidders: bidder } // Adaugă în array doar dacă nu există deja
+        },
         { new: true }
     );
 
@@ -106,7 +109,8 @@ app.post('/api/auctions/:id/bid', authenticateToken, async (req, res) => {
         type: 'BID_UPDATE',
         auctionId: id,
         amount: amount,
-        bidder: bidder
+        bidder: bidder,
+        bidders: updatedAuction.bidders
     };
     await redisPublisher.publish('auction-updates', JSON.stringify(eventMessage));
 

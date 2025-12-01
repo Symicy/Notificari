@@ -5,7 +5,8 @@ const auctionSchema = new mongoose.Schema({
   title: { type: String, required: true },
   startPrice: { type: Number, required: true },
   currentPrice: { type: Number, required: true },
-  highestBidder: { type: String, default: null }, // Numele userului sau ID-ul
+  highestBidder: { type: String, default: null },
+  bidders: [{ type: String }], // Lista tuturor userilor care au licitat
   endTime: { type: Date, required: true },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }

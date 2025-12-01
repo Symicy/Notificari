@@ -55,8 +55,8 @@ function AuctionApp() {
         setLoading(false);
     };
 
-    // Licitațiile la care am aplicat
-    const myBids = auctions.filter(auc => auc.highestBidder === user?.username);
+    // Licitațiile la care am participat (am licitat cel puțin o dată)
+    const myBids = auctions.filter(auc => auc.bidders?.includes(user?.username));
 
     useEffect(() => {
         if (user) {
@@ -66,7 +66,7 @@ function AuctionApp() {
             socket.on('price_update', (data) => {
                 setAuctions(prev => prev.map(auc => 
                     auc._id === data.auctionId 
-                        ? {...auc, currentPrice: data.amount, highestBidder: data.bidder } 
+                        ? {...auc, currentPrice: data.amount, highestBidder: data.bidder, bidders: data.bidders || auc.bidders } 
                         : auc
                 ));
                 setNotification({ 
