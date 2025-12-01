@@ -1,0 +1,99 @@
+# --- AUCTION SERVICE ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auction
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auction
+  template:
+    metadata:
+      labels:
+        app: auction
+    spec:
+      containers:
+      - name: auction
+        image: auction-service:v1
+        imagePullPolicy: Never
+        env:
+        - name: MONGO_URI
+          value: "mongodb://mongo-service:27017/auctiondb"
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auction-service
+spec:
+  selector:
+    app: auction
+  ports:
+  - port: 3000
+
+# --- NOTIFICATION SERVICE ---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification
+spec:
+  replicas: 2  # Rulăm 2 copii pentru a demonstra sistemul distribuit!
+  selector:
+    matchLabels:
+      app: notification
+  template:
+    metadata:
+      labels:
+        app: notification
+    spec:
+      containers:
+      - name: notification
+        image: notification-service:v1
+        imagePullPolicy: Never
+        env:
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+spec:
+  selector:
+    app: notification
+  ports:
+  - port: 4000
+
+# --- FRONTEND ---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: frontend:v1
+        imagePullPolicy: Never
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80

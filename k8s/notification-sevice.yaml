@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+spec:
+  replicas: 2  # Demonstrăm distribuirea!
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+      - name: notification-service
+        image: notification-service:v1
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 4000
+        env:
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+spec:
+  ports:
+  - port: 4000
+  selector:
+    app: notification-service
