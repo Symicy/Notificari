@@ -1,38 +1,54 @@
 // queue/auctionQueue.js
 const { Queue, Worker } = require('bullmq');
+const { randomUUID } = require('crypto');
+const { redisPublisher } = require('../config/redisClient');
 const Auction = require('../models/Auction');
-const { redisPublisher } = require('../redisClient'); 
 
-// 1. Coada care ține job-urile de expirare
+// Parse Redis connection (supports REDIS_URL or host/port)
+const redisUrl = process.env.REDIS_URL || 'redis://redis-service:6379';
+const parsed = new URL(redisUrl);
 const connection = {
-  host: process.env.REDIS_HOST || 'redis-service',
-  port: 6379
+  host: parsed.hostname,
+  port: parsed.port ? Number(parsed.port) : 6379
 };
 
-const auctionExpiryQueue = new Queue('auction-expiry', { connection });
+const QUEUE_NAME = 'auction-expiry';
+const EVENT_CHANNEL = 'auction.events.v1';
 
-// 2. Workerul care procesează job-ul când timpul expiră
-const worker = new Worker('auction-expiry', async (job) => {
-  const { auctionId } = job.data;
-  console.log(` Procesare expirare pentru licitația: ${auctionId}`);
+// Shared queue instance for scheduling expiry jobs
+const auctionExpiryQueue = new Queue(QUEUE_NAME, { connection });
 
-  // Găsim licitația și o marcăm ca inactivă
-  const auction = await Auction.findById(auctionId);
-  if (auction && auction.isActive) {
-    auction.isActive = false;
-    await auction.save();
+// Worker factory so the API process can stay lightweight; the worker runs in its own process
+const createAuctionExpiryWorker = () => new Worker(
+  QUEUE_NAME,
+  async (job) => {
+    const { auctionId } = job.data;
+    console.log(`Procesare expirare pentru licitația: ${auctionId}`);
 
-    // 3. Anunțăm pe Redis că licitația s-a încheiat
-    const message = JSON.stringify({
+    // Marcăm licitația ca inactivă doar dacă este încă activă
+    const auction = await Auction.findOneAndUpdate(
+      { _id: auctionId, isActive: true },
+      { isActive: false },
+      { new: true }
+    );
+
+    if (!auction) return;
+
+    // Publicăm eveniment de finalizare pe canalul unificat
+    const envelope = {
+      eventId: randomUUID(),
       type: 'AUCTION_ENDED',
-      auctionId: auction._id,
-      winner: auction.highestBidder,
-      finalPrice: auction.currentPrice
-    });
-    
-    // Publicăm pe canalul la care ascultă Notification Service
-    await redisPublisher.publish('auction-events', message);
-  }
-}, { connection });
+      occurredAt: new Date().toISOString(),
+      payload: {
+        auctionId: auction._id,
+        winner: auction.highestBidder,
+        finalPrice: auction.currentPrice
+      }
+    };
 
-module.exports = { auctionExpiryQueue };
+    await redisPublisher.publish(EVENT_CHANNEL, JSON.stringify(envelope));
+  },
+  { connection }
+);
+
+module.exports = { auctionExpiryQueue, createAuctionExpiryWorker };

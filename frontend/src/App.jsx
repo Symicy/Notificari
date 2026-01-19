@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import io from 'socket.io-client';
 import axios from 'axios';
 import { 
@@ -16,6 +16,8 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import LocalOfferIcon from '@mui/icons-material/LocalOffer';
 import AllInboxIcon from '@mui/icons-material/AllInbox';
+import EmojiEventsIcon from '@mui/icons-material/EmojiEvents';
+import DoneAllIcon from '@mui/icons-material/DoneAll';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
 
@@ -27,7 +29,8 @@ function AuctionApp() {
     const [bidAmounts, setBidAmounts] = useState({});
     const [notification, setNotification] = useState({ open: false, message: '', severity: 'success' });
     const [loading, setLoading] = useState(true);
-    const [activeTab, setActiveTab] = useState(0); // 0 = toate, 1 = licitațiile mele
+    const [activeTab, setActiveTab] = useState(0); // 0 = active, 1 = licitațiile mele, 2 = câștigate, 3 = finalizate
+    const [serverTime, setServerTime] = useState(Date.now()); // Timpul primit de la server
     
     // State pentru modal adăugare
     const [openAddModal, setOpenAddModal] = useState(false);
@@ -35,6 +38,42 @@ function AuctionApp() {
     
     // Menu utilizator
     const [anchorEl, setAnchorEl] = useState(null);
+
+    // Primește timpul de la server prin WebSocket - toți clienții primesc același timp
+    useEffect(() => {
+        socket.on('server_time', (data) => {
+            setServerTime(data.serverTime);
+        });
+        return () => socket.off('server_time');
+    }, []);
+
+    // Funcție pentru a verifica dacă o licitație este expirată (folosește timpul serverului)
+    const isExpired = useCallback((endTime) => {
+        return new Date(endTime).getTime() <= serverTime;
+    }, [serverTime]);
+
+    // Filtrare licitații
+    const activeAuctions = useMemo(() => 
+        auctions.filter(auc => !isExpired(auc.endTime)), 
+        [auctions, isExpired]
+    );
+    
+    const finishedAuctions = useMemo(() => 
+        auctions.filter(auc => isExpired(auc.endTime)), 
+        [auctions, isExpired]
+    );
+
+    // Licitațiile la care am participat (am licitat cel puțin o dată) - doar cele active
+    const myBids = useMemo(() => 
+        activeAuctions.filter(auc => auc.bidders?.includes(user?.username)), 
+        [activeAuctions, user?.username]
+    );
+
+    // Licitațiile câștigate de utilizator
+    const wonAuctions = useMemo(() => 
+        finishedAuctions.filter(auc => auc.highestBidder === user?.username), 
+        [finishedAuctions, user?.username]
+    );
 
     // Încărcare date
     const loadData = async () => {
@@ -47,9 +86,6 @@ function AuctionApp() {
         }
         setLoading(false);
     };
-
-    // Licitațiile la care am participat (am licitat cel puțin o dată)
-    const myBids = auctions.filter(auc => auc.bidders?.includes(user?.username));
 
     useEffect(() => {
         if (user) {
@@ -154,11 +190,40 @@ function AuctionApp() {
     };
 
     const getTimeRemaining = (endTime) => {
-        const diff = new Date(endTime) - new Date();
+        const diff = new Date(endTime).getTime() - serverTime;
         if (diff <= 0) return 'Expirată';
         const hours = Math.floor(diff / (1000 * 60 * 60));
         const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-        return `${hours}h ${minutes}m`;
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        
+        if (hours > 0) {
+            return `${hours}h ${minutes}m ${seconds}s`;
+        } else if (minutes > 0) {
+            return `${minutes}m ${seconds}s`;
+        } else {
+            return `${seconds}s`;
+        }
+    };
+
+    // Funcție pentru a obține lista de licitații în funcție de tab
+    const getAuctionsForTab = () => {
+        switch (activeTab) {
+            case 0: return activeAuctions;
+            case 1: return myBids;
+            case 2: return wonAuctions;
+            case 3: return finishedAuctions;
+            default: return activeAuctions;
+        }
+    };
+
+    const getEmptyMessage = () => {
+        switch (activeTab) {
+            case 0: return 'Nu există licitații active';
+            case 1: return 'Nu ai licitat încă la nicio licitație activă';
+            case 2: return 'Nu ai câștigat încă nicio licitație';
+            case 3: return 'Nu există licitații finalizate';
+            default: return 'Nu există licitații';
+        }
     };
 
     if (authLoading) {
@@ -232,11 +297,11 @@ function AuctionApp() {
             <Container sx={{ mt: 4, pb: 4 }}>
                 {/* Tabs pentru navigare */}
                 <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
-                    <Tabs value={activeTab} onChange={(e, v) => setActiveTab(v)}>
+                    <Tabs value={activeTab} onChange={(e, v) => setActiveTab(v)} variant="scrollable" scrollButtons="auto">
                         <Tab 
                             icon={<AllInboxIcon />} 
                             iconPosition="start" 
-                            label="Toate Licitațiile" 
+                            label={`Active (${activeAuctions.length})`}
                         />
                         <Tab 
                             icon={
@@ -247,6 +312,24 @@ function AuctionApp() {
                             iconPosition="start" 
                             label="Licitațiile Mele" 
                         />
+                        <Tab 
+                            icon={
+                                <Badge badgeContent={wonAuctions.length} color="success">
+                                    <EmojiEventsIcon />
+                                </Badge>
+                            } 
+                            iconPosition="start" 
+                            label="Câștigate" 
+                        />
+                        <Tab 
+                            icon={
+                                <Badge badgeContent={finishedAuctions.length} color="default">
+                                    <DoneAllIcon />
+                                </Badge>
+                            } 
+                            iconPosition="start" 
+                            label="Finalizate" 
+                        />
                     </Tabs>
                 </Box>
 
@@ -254,11 +337,11 @@ function AuctionApp() {
                     <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
                         <LinearProgress sx={{ width: 200 }} />
                     </Box>
-                ) : (activeTab === 0 ? auctions : myBids).length === 0 ? (
+                ) : getAuctionsForTab().length === 0 ? (
                     <Box sx={{ textAlign: 'center', py: 8 }}>
                         <GavelIcon sx={{ fontSize: 60, color: 'text.secondary', mb: 2 }} />
                         <Typography variant="h5" color="text.secondary">
-                            {activeTab === 0 ? 'Nu există licitații active' : 'Nu ai licitat încă la nicio licitație'}
+                            {getEmptyMessage()}
                         </Typography>
                         {isAdmin && activeTab === 0 && (
                             <Button 
@@ -270,19 +353,24 @@ function AuctionApp() {
                                 Creează prima licitație
                             </Button>
                         )}
-                        {activeTab === 1 && (
+                        {(activeTab === 1 || activeTab === 2 || activeTab === 3) && (
                             <Button 
                                 variant="outlined" 
                                 onClick={() => setActiveTab(0)}
                                 sx={{ mt: 2 }}
                             >
-                                Vezi toate licitațiile
+                                Vezi licitațiile active
                             </Button>
                         )}
                     </Box>
                 ) : (
                     <Grid container spacing={3}>
-                        {(activeTab === 0 ? auctions : myBids).map((auc) => (
+                        {getAuctionsForTab().map((auc) => {
+                            const expired = isExpired(auc.endTime);
+                            const isWinner = expired && auc.highestBidder === user?.username;
+                            const isLeading = !expired && auc.highestBidder === user?.username;
+                            
+                            return (
                             <Grid item xs={12} sm={6} md={4} key={auc._id}>
                                 <Card 
                                     elevation={3} 
@@ -292,14 +380,25 @@ function AuctionApp() {
                                         flexDirection: 'column',
                                         transition: 'transform 0.2s',
                                         '&:hover': { transform: 'translateY(-4px)' },
-                                        border: auc.highestBidder === user?.username ? '2px solid #4caf50' : 'none'
+                                        border: isWinner 
+                                            ? '2px solid #ffc107' 
+                                            : isLeading 
+                                                ? '2px solid #4caf50' 
+                                                : 'none',
+                                        opacity: expired && !isWinner ? 0.8 : 1,
+                                        bgcolor: expired ? '#f5f5f5' : 'white'
                                     }}
                                 >
                                     <CardContent sx={{ flexGrow: 1 }}>
                                         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                            <Typography variant="h5" gutterBottom>
-                                                {auc.title}
-                                            </Typography>
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                                <Typography variant="h5" gutterBottom>
+                                                    {auc.title}
+                                                </Typography>
+                                                {isWinner && (
+                                                    <EmojiEventsIcon sx={{ color: '#ffc107', fontSize: 28 }} />
+                                                )}
+                                            </Box>
                                             {isAdmin && (
                                                 <Tooltip title="Șterge licitația">
                                                     <IconButton 
@@ -313,51 +412,70 @@ function AuctionApp() {
                                             )}
                                         </Box>
                                         
-                                        <Typography variant="h3" color="primary" sx={{ my: 2, fontWeight: 'bold' }}>
+                                        <Typography variant="h3" color={expired ? 'text.secondary' : 'primary'} sx={{ my: 2, fontWeight: 'bold' }}>
                                             ${auc.currentPrice}
                                         </Typography>
                                         
                                         <Box sx={{ mb: 2 }}>
                                             <Chip 
-                                                icon={<PersonIcon />}
-                                                label={auc.highestBidder ? `Lider: ${auc.highestBidder}` : 'Fără oferte'}
-                                                color={auc.highestBidder === user.username ? 'success' : 'default'}
-                                                variant="outlined"
+                                                icon={isWinner ? <EmojiEventsIcon /> : <PersonIcon />}
+                                                label={
+                                                    isWinner 
+                                                        ? 'Ai câștigat!' 
+                                                        : auc.highestBidder 
+                                                            ? `${expired ? 'Câștigător' : 'Lider'}: ${auc.highestBidder}` 
+                                                            : 'Fără oferte'
+                                                }
+                                                color={isWinner ? 'warning' : isLeading ? 'success' : 'default'}
+                                                variant={isWinner ? 'filled' : 'outlined'}
                                                 sx={{ mr: 1, mb: 1 }}
                                             />
                                             <Chip 
                                                 icon={<AccessTimeIcon />}
                                                 label={getTimeRemaining(auc.endTime)}
-                                                color="warning"
-                                                variant="outlined"
+                                                color={expired ? 'error' : 'warning'}
+                                                variant={expired ? 'filled' : 'outlined'}
                                                 sx={{ mb: 1 }}
                                             />
                                         </Box>
                                         
                                         <Divider sx={{ my: 2 }} />
                                         
-                                        <Box sx={{ display: 'flex', gap: 1 }}>
-                                            <TextField 
-                                                label="Suma ta" 
-                                                type="number" 
-                                                size="small"
-                                                fullWidth
-                                                value={bidAmounts[auc._id] || ''}
-                                                onChange={(e) => setBidAmounts({...bidAmounts, [auc._id]: e.target.value})}
-                                                placeholder={`Min: $${auc.currentPrice + 1}`}
-                                            />
-                                            <Button 
-                                                variant="contained" 
-                                                onClick={() => handleBid(auc._id)}
-                                                sx={{ minWidth: 100 }}
-                                            >
-                                                Licitează
-                                            </Button>
-                                        </Box>
+                                        {expired ? (
+                                            <Box sx={{ textAlign: 'center', py: 1 }}>
+                                                <Typography variant="body2" color="text.secondary">
+                                                    {auc.highestBidder 
+                                                        ? isWinner 
+                                                            ? '🎉 Felicitări! Ai câștigat această licitație!' 
+                                                            : `Licitație finalizată - Câștigător: ${auc.highestBidder}`
+                                                        : 'Licitație finalizată fără oferte'
+                                                    }
+                                                </Typography>
+                                            </Box>
+                                        ) : (
+                                            <Box sx={{ display: 'flex', gap: 1 }}>
+                                                <TextField 
+                                                    label="Suma ta" 
+                                                    type="number" 
+                                                    size="small"
+                                                    fullWidth
+                                                    value={bidAmounts[auc._id] || ''}
+                                                    onChange={(e) => setBidAmounts({...bidAmounts, [auc._id]: e.target.value})}
+                                                    placeholder={`Min: $${auc.currentPrice + 1}`}
+                                                />
+                                                <Button 
+                                                    variant="contained" 
+                                                    onClick={() => handleBid(auc._id)}
+                                                    sx={{ minWidth: 100 }}
+                                                >
+                                                    Licitează
+                                                </Button>
+                                            </Box>
+                                        )}
                                     </CardContent>
                                 </Card>
                             </Grid>
-                        ))}
+                        )})}
                     </Grid>
                 )}
             </Container>

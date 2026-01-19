@@ -15,14 +15,65 @@ spec:
       containers:
       - name: auction-service
         image: auction-service:v1
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000
-        env:
-        - name: MONGO_URI
-          value: "mongodb://mongo-service:27017/auctiondb"
-        - name: REDIS_URL
-          value: "redis://redis-service:6379"
+        envFrom:
+        - configMapRef:
+            name: auction-app-config
+        - secretRef:
+            name: auction-app-secrets
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auction-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auction-worker
+  template:
+    metadata:
+      labels:
+        app: auction-worker
+    spec:
+      containers:
+      - name: auction-worker
+        image: auction-service:v1
+        imagePullPolicy: IfNotPresent
+        command: ["node", "worker.js"]
+        envFrom:
+        - configMapRef:
+            name: auction-app-config
+        - secretRef:
+            name: auction-app-secrets
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 300m
+            memory: 512Mi
 ---
 apiVersion: v1
 kind: Service

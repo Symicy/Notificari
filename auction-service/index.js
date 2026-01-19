@@ -2,8 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const { randomUUID } = require('crypto');
 const { redisPublisher } = require('./config/redisClient');
+const { auctionExpiryQueue } = require('./queue/auctionQueue');
 const Auction = require('./models/Auction');
+const Bid = require('./models/Bid');
 const User = require('./models/User');
 const { authenticateToken, requireAdmin, generateToken } = require('./middleware/auth');
 
@@ -11,7 +14,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Health/readiness state
+let isReady = false;
+
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/auctiondb';
+const EVENT_CHANNEL = 'auction.events.v1';
+const MIN_BID_INCREMENT = Number(process.env.MIN_BID_INCREMENT || 1);
+
+const publishEvent = async (type, payload, traceId) => {
+    const envelope = {
+        eventId: randomUUID(),
+        type,
+        occurredAt: new Date().toISOString(),
+        traceId,
+        payload,
+    };
+    await redisPublisher.publish(EVENT_CHANNEL, JSON.stringify(envelope));
+};
+
+const scheduleExpiry = async (auction) => {
+    const delay = new Date(auction.endTime).getTime() - Date.now();
+    if (delay <= 0) return;
+    await auctionExpiryQueue.add(
+        'expire-auction',
+        { auctionId: auction._id.toString() },
+        {
+            jobId: auction._id.toString(),
+            delay,
+            removeOnComplete: true,
+            removeOnFail: 1000
+        }
+    );
+};
 
 mongoose.connect(MONGO_URI).then(async () => {
     console.log("Mongo Connected");
@@ -27,6 +61,14 @@ mongoose.connect(MONGO_URI).then(async () => {
         });
         console.log('Admin default creat: admin / admin123');
     }
+
+    // Re-schedule expiries for active auctions on startup
+    const activeAuctions = await Auction.find({ isActive: true, endTime: { $gt: new Date() } });
+    for (const auction of activeAuctions) {
+        await scheduleExpiry(auction);
+    }
+
+    isReady = true;
 });
 
 // ==================== AUTH ROUTES ====================
@@ -89,30 +131,65 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
 // POST: Plasează o ofertă (necesită autentificare)
 app.post('/api/auctions/:id/bid', authenticateToken, async (req, res) => {
     const { id } = req.params;
-    const { amount } = req.body;
+    const { amount, version: expectedVersionBody } = req.body;
     const bidder = req.user.username;
 
-    // 1. Update Atomic în baza de date + adaugă bidder în lista de participanți
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+        return res.status(400).json({ error: "Introdu o sumă validă" });
+    }
+
+    // Verifică licitația și regulile înainte de update atomic
+    const auction = await Auction.findById(id);
+    if (!auction) {
+        return res.status(404).json({ error: "Licitația nu a fost găsită" });
+    }
+    if (!auction.isActive) {
+        return res.status(400).json({ error: "Licitația nu mai este activă" });
+    }
+    if (new Date(auction.endTime) <= new Date()) {
+        return res.status(400).json({ error: "Licitația s-a încheiat" });
+    }
+
+    const minRequired = Number(auction.currentPrice) + MIN_BID_INCREMENT;
+    if (numericAmount < minRequired) {
+        return res.status(400).json({ error: `Oferta minimă trebuie să fie cel puțin ${minRequired}` });
+    }
+
+    const expectedVersion = Number.isInteger(expectedVersionBody) ? expectedVersionBody : auction.__v;
+
+    // Update atomic + increment versiune pentru O.C.C.
     const updatedAuction = await Auction.findOneAndUpdate(
-        { _id: id, currentPrice: { $lt: amount }, isActive: true },
-        { 
-            $set: { currentPrice: amount, highestBidder: bidder },
-            $addToSet: { bidders: bidder } // Adaugă în array doar dacă nu există deja
+        {
+            _id: id,
+            isActive: true,
+            endTime: { $gt: new Date() },
+            currentPrice: { $lt: numericAmount },
+            __v: expectedVersion
+        },
+        {
+            $set: { currentPrice: numericAmount, highestBidder: bidder },
+            $addToSet: { bidders: bidder },
+            $inc: { __v: 1 }
         },
         { new: true }
     );
 
-    if (!updatedAuction) return res.status(400).json({ error: "Ofertă invalidă sau preț prea mic" });
+    if (!updatedAuction) {
+        return res.status(409).json({ error: "Ofertă concurentă sau preț prea mic - reîncarcă și încearcă din nou" });
+    }
+
+    // Persistăm istoricul ofertelor
+    await Bid.create({ auctionId: id, bidder, amount: numericAmount });
 
     // 2. PUBLICĂ EVENIMENTUL ÎN REDIS
-    const eventMessage = {
-        type: 'BID_UPDATE',
+    await publishEvent('BID_PLACED', {
         auctionId: id,
-        amount: amount,
+        amount: numericAmount,
         bidder: bidder,
-        bidders: updatedAuction.bidders
-    };
-    await redisPublisher.publish('auction-updates', JSON.stringify(eventMessage));
+        bidders: updatedAuction.bidders,
+        version: updatedAuction.__v
+    });
 
     res.json(updatedAuction);
 });
@@ -135,12 +212,12 @@ app.post('/api/auctions', authenticateToken, requireAdmin, async (req, res) => {
             createdBy: req.user.id
         });
         await auction.save();
+
+        // Programează expirarea licitației
+        await scheduleExpiry(auction);
         
         // Publică eveniment pentru actualizare automată
-        await redisPublisher.publish('auction-updates', JSON.stringify({
-            type: 'AUCTION_CREATED',
-            auction: auction
-        }));
+        await publishEvent('AUCTION_CREATED', { auction });
         
         res.json(auction);
     } catch (err) {
@@ -152,18 +229,24 @@ app.post('/api/auctions', authenticateToken, requireAdmin, async (req, res) => {
 app.delete('/api/auctions/:id', authenticateToken, requireAdmin, async (req, res) => {
     try {
         await Auction.findByIdAndDelete(req.params.id);
-        
+
         // Publică eveniment pentru actualizare automată
-        await redisPublisher.publish('auction-updates', JSON.stringify({
-            type: 'AUCTION_DELETED',
-            auctionId: req.params.id
-        }));
-        
+        await publishEvent('AUCTION_DELETED', { auctionId: req.params.id });
+
         res.json({ message: 'Licitație ștearsă' });
     } catch (err) {
         res.status(500).json({ error: 'Eroare la ștergere' });
     }
 });
+
+// Endpoint pentru sincronizare timp server
+app.get('/api/time', (req, res) => {
+    res.json({ serverTime: Date.now() });
+});
+
+// Health and readiness endpoints
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.get('/readyz', (_req, res) => (isReady ? res.status(200).send('ok') : res.status(503).send('not ready')));
 
 // Endpoint pentru seed - adaugă date de test
 app.post('/api/seed', async (req, res) => {
@@ -182,4 +265,20 @@ app.post('/api/seed', async (req, res) => {
     res.json({ message: 'Date de test adăugate!' });
 });
 
-app.listen(3000, () => console.log('Auction Service running on 3000'));
+const server = app.listen(3000, () => console.log('Auction Service running on 3000'));
+
+const shutdown = async () => {
+    console.log('Shutting down gracefully...');
+    isReady = false;
+    server.close(() => {
+        console.log('HTTP server closed');
+    });
+    await mongoose.connection.close();
+    if (redisPublisher.isOpen) {
+        await redisPublisher.quit();
+    }
+    process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

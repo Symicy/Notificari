@@ -10,6 +10,6 @@ const auctionSchema = new mongoose.Schema({
   endTime: { type: Date, required: true },
   isActive: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
-});
+}, { versionKey: '__v' });
 
 module.exports = mongoose.model('Auction', auctionSchema);
